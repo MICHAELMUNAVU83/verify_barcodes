@@ -4,9 +4,34 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
-    <.live_title default="VerifyBarcodes" suffix=" · Phoenix Framework">
+    <.live_title default={default_page_title()}>
       {assigns[:page_title]}
     </.live_title>
+    <meta name="description" content={page_description(assigns)} />
+    <meta
+      name="robots"
+      content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"
+    />
+    <meta name="theme-color" content="#0057B8" />
+    <link rel="canonical" href={page_url(assigns)} />
+
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content={site_name()} />
+    <meta property="og:type" content={page_type(assigns)} />
+    <meta property="og:title" content={page_title(assigns)} />
+    <meta property="og:description" content={page_description(assigns)} />
+    <meta property="og:url" content={page_url(assigns)} />
+    <meta property="og:image" content={page_image(assigns)} />
+    <meta property="og:image:alt" content="GS1 barcode verifier logo" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={page_title(assigns)} />
+    <meta name="twitter:description" content={page_description(assigns)} />
+    <meta name="twitter:image" content={page_image(assigns)} />
+
+    <script type="application/ld+json">
+      {raw(structured_data(assigns))}
+    </script>
     <link phx-track-static rel="stylesheet" href={~p"/assets/app.css"} />
     <script defer phx-track-static type="text/javascript" src={~p"/assets/app.js"}>
     </script>

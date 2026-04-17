@@ -7,6 +7,14 @@ defmodule VerifyBarcodesWeb.BarcodeLive.Index do
   def mount(_params, _session, socket) do
     {:ok,
      socket
+     |> assign(:page_title, "GS1 Barcode Verifier")
+     |> assign(
+       :page_description,
+       "Upload a barcode image and get an AI-assisted GS1-style verification summary with a score, findings, and recommendations."
+     )
+     |> assign(:page_url, url(~p"/"))
+     |> assign(:page_image, url(~p"/images/gs1.png"))
+     |> assign(:page_type, "website")
      |> assign(:status, :idle)
      |> assign(:result, nil)
      |> assign(:error_message, nil)

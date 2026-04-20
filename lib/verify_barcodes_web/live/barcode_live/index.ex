@@ -19,6 +19,9 @@ defmodule VerifyBarcodesWeb.BarcodeLive.Index do
      |> assign(:result, nil)
      |> assign(:error_message, nil)
      |> assign(:preview_url, nil)
+     |> assign(:gtin_status, :none)
+     |> assign(:detected_gtin, nil)
+     |> assign(:product, nil)
      |> allow_upload(:barcode_image,
        accept: ~w(.jpg .jpeg .png .webp),
        max_entries: 1,
@@ -76,7 +79,10 @@ defmodule VerifyBarcodesWeb.BarcodeLive.Index do
      |> assign(:status, :idle)
      |> assign(:result, nil)
      |> assign(:preview_url, nil)
-     |> assign(:error_message, nil)}
+     |> assign(:error_message, nil)
+     |> assign(:gtin_status, :none)
+     |> assign(:detected_gtin, nil)
+     |> assign(:product, nil)}
   end
 
   def handle_event("cancel-upload", %{"ref" => ref}, socket) do
@@ -90,7 +96,8 @@ defmodule VerifyBarcodesWeb.BarcodeLive.Index do
         {:noreply,
          socket
          |> assign(:status, :complete)
-         |> assign(:result, result)}
+         |> assign(:result, result)
+         |> start_gtin_verify(result)}
 
       {:error, message} ->
         {:noreply,
@@ -98,6 +105,28 @@ defmodule VerifyBarcodesWeb.BarcodeLive.Index do
          |> assign(:status, :error)
          |> assign(:error_message, message)}
     end
+  end
+
+  def handle_info({:gtin_verify_complete, {:verified, gtin, product}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:gtin_status, :verified)
+     |> assign(:detected_gtin, gtin)
+     |> assign(:product, product)}
+  end
+
+  def handle_info({:gtin_verify_complete, {:not_verified, gtin}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:gtin_status, :not_verified)
+     |> assign(:detected_gtin, gtin)}
+  end
+
+  def handle_info({:gtin_verify_complete, {:invalid, gtin, _reason}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:gtin_status, :invalid)
+     |> assign(:detected_gtin, gtin)}
   end
 
   def handle_info({:analysis_complete, {:error, reason}}, socket) do
@@ -114,6 +143,75 @@ defmodule VerifyBarcodesWeb.BarcodeLive.Index do
      |> assign(:status, :error)
      |> assign(:error_message, message)}
   end
+
+  defp start_gtin_verify(socket, %{"gtin" => gtin_raw}) do
+    case sanitize_gtin(gtin_raw) do
+      nil ->
+        assign(socket, :gtin_status, :no_gtin)
+
+      digits ->
+        parent = self()
+
+        Task.start(fn ->
+          message =
+            case VerifyBarcodes.Gtin.validate(digits) do
+              {:ok, gtin} ->
+                padded = VerifyBarcodes.Gtin.pad_to_14(gtin)
+
+                case VerifyBarcodes.VerifyGtin.verify(padded) do
+                  {:ok, :not_verified} ->
+                    {:gtin_verify_complete, {:not_verified, gtin}}
+
+                  {:ok, body} when is_list(body) and body != [] ->
+                    {:gtin_verify_complete, {:verified, gtin, extract_product(body)}}
+
+                  _ ->
+                    {:gtin_verify_complete, {:not_verified, gtin}}
+                end
+
+              {:error, reason} ->
+                {:gtin_verify_complete, {:invalid, digits, reason}}
+            end
+
+          send(parent, message)
+        end)
+
+        assign(socket, :gtin_status, :verifying)
+    end
+  end
+
+  defp start_gtin_verify(socket, _result), do: assign(socket, :gtin_status, :no_gtin)
+
+  defp sanitize_gtin(value) when is_binary(value) do
+    case String.replace(value, ~r/\D/, "") do
+      "" -> nil
+      digits -> digits
+    end
+  end
+
+  defp sanitize_gtin(_), do: nil
+
+  defp extract_product(body) do
+    first = Enum.at(body, 0) || %{}
+
+    %{
+      brand: extract_value(first["brandName"]),
+      manufacturer: extract_manufacturer(first["gs1Licence"]),
+      description: extract_value(first["productDescription"]),
+      weight: extract_value(first["netContent"]),
+      uom: extract_unit(first["netContent"]),
+      image: extract_value(first["productImageUrl"])
+    }
+  end
+
+  defp extract_value([first | _]) when is_map(first), do: Map.get(first, "value")
+  defp extract_value(_), do: nil
+
+  defp extract_unit([first | _]) when is_map(first), do: Map.get(first, "unitCode")
+  defp extract_unit(_), do: nil
+
+  defp extract_manufacturer(%{"licenseeName" => name}) when is_binary(name) and name != "", do: name
+  defp extract_manufacturer(_), do: nil
 
   defp parse_ai_response(raw_text) do
     raw_text
@@ -309,7 +407,11 @@ defmodule VerifyBarcodesWeb.BarcodeLive.Index do
                 <div class="mt-4 text-xs font-medium uppercase tracking-[0.18em] text-gs1-orange-dark">
                   JPG, PNG, WebP up to 5MB
                 </div>
-                <.live_file_input upload={@uploads.barcode_image} class="hidden" />
+                <.live_file_input
+                  upload={@uploads.barcode_image}
+                  class="hidden"
+                  capture="environment"
+                />
               </label>
             </div>
 
@@ -407,6 +509,117 @@ defmodule VerifyBarcodesWeb.BarcodeLive.Index do
 
         <%= if @status == :complete and @result do %>
           <div class="space-y-4">
+            <%= if @gtin_status == :verifying do %>
+              <div class="rounded-2xl border border-gs1-blue/15 bg-white p-5 shadow-sm">
+                <div class="flex items-center gap-3">
+                  <div class="h-5 w-5 animate-spin rounded-full border-2 border-slate-200 border-t-gs1-blue">
+                  </div>
+                  <div class="text-sm font-medium text-slate-700">
+                    Looking up GTIN in the GS1 registry…
+                  </div>
+                </div>
+              </div>
+            <% end %>
+
+            <%= if @gtin_status == :verified and @product do %>
+              <div class="rounded-2xl border border-gs1-blue/20 bg-gs1-blue-soft/40 p-6 shadow-sm">
+                <div class="flex items-center justify-between gap-4">
+                  <div class="text-sm font-medium uppercase tracking-[0.16em] text-gs1-blue">
+                    GS1 Registry Match
+                  </div>
+                  <span class="inline-flex w-fit rounded-full bg-gs1-blue px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-white">
+                    Verified
+                  </span>
+                </div>
+
+                <div class="mt-4 grid gap-5 sm:grid-cols-[10rem_1fr] sm:items-start">
+                  <%= if @product.image do %>
+                    <img
+                      src={@product.image}
+                      alt={@product.brand || "Product image"}
+                      class="h-40 w-40 rounded-xl border border-gs1-blue/15 bg-white object-contain p-2"
+                    />
+                  <% else %>
+                    <div class="flex h-40 w-40 items-center justify-center rounded-xl border border-dashed border-gs1-blue/25 bg-white text-xs text-slate-400">
+                      No image
+                    </div>
+                  <% end %>
+
+                  <div class="min-w-0 space-y-2">
+                    <div class="text-2xl font-semibold tracking-[-0.02em] text-gs1-ink">
+                      {@product.brand || "Unknown brand"}
+                    </div>
+                    <%= if @product.description do %>
+                      <p class="text-sm leading-6 text-slate-700">{@product.description}</p>
+                    <% end %>
+                    <dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+                      <%= if @product.manufacturer do %>
+                        <div>
+                          <dt class="text-xs uppercase tracking-[0.14em] text-slate-500">
+                            Manufacturer
+                          </dt>
+                          <dd class="mt-1 font-medium text-gs1-ink">{@product.manufacturer}</dd>
+                        </div>
+                      <% end %>
+                      <%= if @product.weight do %>
+                        <div>
+                          <dt class="text-xs uppercase tracking-[0.14em] text-slate-500">
+                            Net content
+                          </dt>
+                          <dd class="mt-1 font-medium text-gs1-ink">
+                            {@product.weight} {@product.uom}
+                          </dd>
+                        </div>
+                      <% end %>
+                      <div>
+                        <dt class="text-xs uppercase tracking-[0.14em] text-slate-500">GTIN</dt>
+                        <dd class="mt-1 font-mono text-gs1-ink">{@detected_gtin}</dd>
+                      </div>
+                    </dl>
+                  </div>
+                </div>
+              </div>
+            <% end %>
+
+            <%= if @gtin_status == :not_verified do %>
+              <div class="rounded-2xl border border-gs1-orange/25 bg-gs1-orange-soft/40 p-5 shadow-sm">
+                <div class="text-sm font-medium uppercase tracking-[0.16em] text-gs1-orange-dark">
+                  Not in GS1 Registry
+                </div>
+                <p class="mt-2 text-sm leading-6 text-slate-700">
+                  GTIN <span class="font-mono">{@detected_gtin}</span>
+                  is a valid number but was not found in the GS1 verified registry.
+                </p>
+              </div>
+            <% end %>
+
+            <%= if @gtin_status == :invalid do %>
+              <div class="rounded-2xl border border-gs1-orange/25 bg-gs1-orange-soft/40 p-5 shadow-sm">
+                <div class="text-sm font-medium uppercase tracking-[0.16em] text-gs1-orange-dark">
+                  Invalid GTIN
+                </div>
+                <p class="mt-2 text-sm leading-6 text-slate-700">
+                  The digits read from the barcode
+                  <%= if @detected_gtin do %>
+                    (<span class="font-mono">{@detected_gtin}</span>)
+                  <% end %>
+                  are not a valid GS1 GTIN (check digit does not match).
+                </p>
+              </div>
+            <% end %>
+
+            <%= if @gtin_status == :no_gtin do %>
+              <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div class="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">
+                  No GTIN Detected
+                </div>
+                <p class="mt-2 text-sm leading-6 text-slate-700">
+                  We could not read a legible GTIN from the image, so a GS1 registry lookup was skipped.
+                  Try a sharper photo with the digits under the barcode clearly visible.
+                </p>
+              </div>
+            <% end %>
+
             <div class={"rounded-2xl border p-6 #{verdict_class(@result["overall_verdict"])}"}>
               <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div>

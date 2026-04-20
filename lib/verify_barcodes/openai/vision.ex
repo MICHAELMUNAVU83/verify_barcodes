@@ -54,11 +54,16 @@ defmodule VerifyBarcodes.OpenAI.Vision do
   - Good: "Surface detail is too limited to identify the substrate or print process."
   - Bad: "The image is tightly cropped around the symbol and does not show enough surface detail to identify the substrate or printing process reliably."
 
+  Also read the GTIN digits from the human-readable interpretation (HRI) under the barcode
+  if they are visible. Return only digits in the "gtin" field — no spaces or separators.
+  If the digits are not legible in the image, return null.
+
   Schema:
   {
     "overall_verdict": "PASS" | "FAIL" | "WARNING",
     "overall_score": <integer 0-100>,
     "summary": "<one-sentence overall summary>",
+    "gtin": "<digits only, or null if not legible>",
     "checks": [
       {
         "criterion": "<name exactly as listed above>",

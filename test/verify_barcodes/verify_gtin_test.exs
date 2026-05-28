@@ -1,153 +1,114 @@
 defmodule VerifyBarcodes.VerifyGtinTest do
   use ExUnit.Case, async: false
 
-  @verified_by_gs1_url "https://grp.gs1.org/grp/v3.2/gtins/verified"
-  @gs1_kenya_url "https://gs1kenya.org/activate/getbarcode"
+  @gs1_kenya_url "https://gs1kenya.org/activate/getbarcode_v2"
+  @bearer_token "test-token"
 
   setup do
     previous_client = Application.get_env(:verify_barcodes, :gtin_http_client)
     previous_test_pid = Application.get_env(:verify_barcodes, :gtin_http_test_pid)
     previous_responses = Application.get_env(:verify_barcodes, :gtin_http_test_responses)
     previous_kenya_url = Application.get_env(:verify_barcodes, :gs1_kenya_getbarcode_url)
+    previous_bearer_token = Application.get_env(:verify_barcodes, :gs1_kenya_bearer_token)
 
     Application.put_env(:verify_barcodes, :gtin_http_client, VerifyBarcodes.GtinHttpClientStub)
     Application.put_env(:verify_barcodes, :gtin_http_test_pid, self())
+    Application.put_env(:verify_barcodes, :gs1_kenya_bearer_token, @bearer_token)
 
     on_exit(fn ->
       restore_env(:gtin_http_client, previous_client)
       restore_env(:gtin_http_test_pid, previous_test_pid)
       restore_env(:gtin_http_test_responses, previous_responses)
       restore_env(:gs1_kenya_getbarcode_url, previous_kenya_url)
+      restore_env(:gs1_kenya_bearer_token, previous_bearer_token)
     end)
 
     :ok
   end
 
-  test "returns normalized Verified by GS1 data without using the fallback endpoint" do
+  test "posts directly to GS1 Kenya v2 and maps product plus GCP fields" do
     Application.put_env(
       :verify_barcodes,
       :gtin_http_test_responses,
       %{
-        @verified_by_gs1_url =>
+        @gs1_kenya_url =>
           {:ok,
            %Req.Response{
              status: 200,
-             body: [
-               %{
-                 "gtin" => "09506000134352",
-                 "brandName" => [%{"value" => "Acme Foods"}],
-                 "productDescription" => [%{"value" => "Roasted ground coffee"}],
-                 "gpcCategoryCode" => "10000045",
-                 "netContent" => [%{"value" => "500", "unitCode" => "GRM"}],
-                 "countryOfSaleCode" => [%{"alpha3" => "KEN", "alpha2" => "KE"}],
-                 "productImageUrl" => [%{"value" => "https://example.com/product.png"}],
-                 "gs1Licence" => %{"licenseeName" => "Acme Foods Ltd"}
+             body: %{
+               "product" => %{
+                 "weight" => "1",
+                 "unit_of_measure" => "PIECE",
+                 "target_market" => "KE",
+                 "status" => "Inactive",
+                 "image" => "https://gs1kenya.org/uploads/",
+                 "global_product_classification" => "Baby/Infant Cutlery (Non Disposable)",
+                 "description" => "TEEPEE WOODEN TOOTHPICKS TP6",
+                 "brand_owner" => "BRUSH MANUFACTURERS",
+                 "brand_name" => "TEEPEE"
+               },
+               "brand_owner" => %{
+                 "website" => "https://N/A",
+                 "licensing_member_organization" => "GS1 Kenya",
+                 "license_type" => "GCP",
+                 "license_key" => "616110226",
+                 "brand_owner" => "BRUSH MANUFACTURERS",
+                 "address" => "N/A"
                }
-             ]
+             }
            }}
       }
     )
 
-    assert {:ok, product} = VerifyBarcodes.VerifyGtin.verify("9506000134352")
-
-    assert product.source_label == "Verified by GS1"
-    assert product.gtin == "09506000134352"
-    assert product.brand == "Acme Foods"
-    assert product.description == "Roasted ground coffee"
-    assert product.net_content == "500 GRM"
-    assert product.country_of_sale == "KEN (KE)"
-    assert product.licensee == "Acme Foods Ltd"
-
-    assert_received {:gtin_http_called, @verified_by_gs1_url, verified_options}
-    assert verified_options[:json] == ["09506000134352"]
-    refute_received {:gtin_http_called, @gs1_kenya_url, _options}
-  end
-
-  test "falls back to GS1 Kenya and maps target 001 and H87 for the UI" do
-    Application.put_env(
-      :verify_barcodes,
-      :gtin_http_test_responses,
-      fn
-        @verified_by_gs1_url, _options ->
-          {:ok, %Req.Response{status: 200, body: []}}
-
-        @gs1_kenya_url, options ->
-          assert options[:json] == %{"id" => %{"barcode" => "6161101890151"}}
-
-          {:ok,
-           %Req.Response{
-             status: 200,
-             body: %{
-               "weight" => "1",
-               "uom" => "H87",
-               "target" => "001",
-               "package" => nil,
-               "name" => "Cosy",
-               "image" => "https://gs1kenya.org/uploads/",
-               "description" => "Cosy serviette 10 extra",
-               "company" => "KIM-FAY EAST AFRICA LIMITED",
-               "classify" => "Beauty/Personal Care/Hygiene Variety Packs"
-             }
-           }}
-      end
-    )
-
-    assert {:ok, product} = VerifyBarcodes.VerifyGtin.verify("6161101890151")
+    assert {:ok, product} = VerifyBarcodes.VerifyGtin.verify("6161102266160")
 
     assert product.source_label == "GS1 Kenya"
-    assert product.gtin == "6161101890151"
-    assert product.name == "Cosy"
-    assert product.description == "Cosy serviette 10 extra"
-    assert product.category == "Beauty/Personal Care/Hygiene Variety Packs"
+    assert product.gtin == "6161102266160"
+    assert product.brand == "TEEPEE"
+    assert product.description == "TEEPEE WOODEN TOOTHPICKS TP6"
+    assert product.category == "Baby/Infant Cutlery (Non Disposable)"
     assert product.net_content == "1 Piece"
-    assert product.target_market == "Global"
+    assert product.target_market == "Kenya"
+    assert product.status == "Inactive"
     assert product.unit_of_measure == "Piece"
     assert product.image_url == nil
-    assert product.licensee == "KIM-FAY EAST AFRICA LIMITED"
+    assert product.licensee == "BRUSH MANUFACTURERS"
+    assert product.brand_owner == "BRUSH MANUFACTURERS"
+    assert product.licensing_member_organization == "GS1 Kenya"
+    assert product.license_type == "GCP"
+    assert product.license_key == "616110226"
+    assert product.brand_owner_website == nil
 
-    assert_received {:gtin_http_called, @verified_by_gs1_url, _verified_options}
-    assert_received {:gtin_http_called, @gs1_kenya_url, _kenya_options}
+    assert_received {:gtin_http_called, @gs1_kenya_url, options}
+    assert options[:json] == %{"barcode" => "6161102266160"}
+    assert {"Authorization", "Bearer #{@bearer_token}"} in options[:headers]
   end
 
-  test "falls back to GS1 Kenya when Verified by GS1 only returns the GTIN" do
+  test "strips a single leading zero before trying the 13 digit GS1 Kenya barcode" do
     Application.put_env(
       :verify_barcodes,
       :gtin_http_test_responses,
       fn
-        @verified_by_gs1_url, _options ->
-          {:ok,
-           %Req.Response{
-             status: 200,
-             body: [
-               %{
-                 "gtin" => "06161101890151",
-                 "brandName" => [],
-                 "productDescription" => [],
-                 "gpcCategoryCode" => nil,
-                 "netContent" => [],
-                 "countryOfSaleCode" => [],
-                 "productImageUrl" => [],
-                 "gs1Licence" => %{}
-               }
-             ]
-           }}
-
         @gs1_kenya_url, options ->
-          assert options[:json] == %{"id" => %{"barcode" => "6161101890151"}}
+          assert options[:json] == %{"barcode" => "6161101890151"}
 
           {:ok,
            %Req.Response{
              status: 200,
              body: %{
-               "weight" => "1",
-               "uom" => "H87",
-               "target" => "001",
-               "package" => nil,
-               "name" => "Cosy",
-               "image" => "https://gs1kenya.org/uploads/",
-               "description" => " Cosy serviette 10 extra",
-               "company" => "KIM-FAY EAST AFRICA LIMITED",
-               "classify" => "Beauty/Personal Care/Hygiene Variety Packs"
+               "product" => %{
+                 "weight" => "1",
+                 "unit_of_measure" => "H87",
+                 "target_market" => "001",
+                 "description" => "Cosy serviette 10 extra",
+                 "global_product_classification" => "Beauty/Personal Care/Hygiene Variety Packs",
+                 "brand_name" => "Cosy"
+               },
+               "brand_owner" => %{
+                 "brand_owner" => "KIM-FAY EAST AFRICA LIMITED",
+                 "license_type" => "GCP",
+                 "license_key" => "616110189"
+               }
              }
            }}
       end
@@ -157,47 +118,17 @@ defmodule VerifyBarcodes.VerifyGtinTest do
 
     assert product.source_label == "GS1 Kenya"
     assert product.gtin == "06161101890151"
-    assert product.name == "Cosy"
+    assert product.brand == "Cosy"
     assert product.description == "Cosy serviette 10 extra"
     assert product.net_content == "1 Piece"
     assert product.target_market == "Global"
     assert product.unit_of_measure == "Piece"
     assert product.licensee == "KIM-FAY EAST AFRICA LIMITED"
-  end
-
-  test "maps GS1 Kenya u2 to Tablet" do
-    Application.put_env(
-      :verify_barcodes,
-      :gtin_http_test_responses,
-      fn
-        @verified_by_gs1_url, _options ->
-          {:error, :timeout}
-
-        @gs1_kenya_url, _options ->
-          {:ok,
-           %Req.Response{
-             status: 200,
-             body: %{
-               "weight" => "30",
-               "uom" => "u2",
-               "target" => "404",
-               "package" => nil,
-               "name" => "Pain Relief",
-               "company" => "Example Pharma"
-             }
-           }}
-      end
-    )
-
-    assert {:ok, product} = VerifyBarcodes.VerifyGtin.verify("1234567890128")
-
-    assert product.net_content == "30 Tablet"
-    assert product.unit_of_measure == "Tablet"
-    assert product.target_market == "404"
+    assert product.license_key == "616110189"
   end
 
   test "uses the configured local GS1 Kenya barcode endpoint" do
-    local_url = "http://localhost:4001/activate/getbarcode"
+    local_url = "http://localhost:4001/activate/getbarcode_v2"
 
     Application.put_env(:verify_barcodes, :gs1_kenya_getbarcode_url, local_url)
 
@@ -205,21 +136,19 @@ defmodule VerifyBarcodes.VerifyGtinTest do
       :verify_barcodes,
       :gtin_http_test_responses,
       fn
-        @verified_by_gs1_url, _options ->
-          {:ok, %Req.Response{status: 200, body: []}}
-
         ^local_url, options ->
-          assert options[:json] == %{"id" => %{"barcode" => "6161101890151"}}
+          assert options[:json] == %{"barcode" => "6161101890151"}
 
           {:ok,
            %Req.Response{
              status: 200,
              body: %{
-               "weight" => "1",
-               "uom" => "H87",
-               "target" => "001",
-               "name" => "Cosy",
-               "company" => "KIM-FAY EAST AFRICA LIMITED"
+               "product" => %{
+                 "weight" => "1",
+                 "unit_of_measure" => "PIECE",
+                 "brand_name" => "Cosy"
+               },
+               "brand_owner" => %{"brand_owner" => "KIM-FAY EAST AFRICA LIMITED"}
              }
            }}
       end
@@ -236,17 +165,14 @@ defmodule VerifyBarcodes.VerifyGtinTest do
       :verify_barcodes,
       :gtin_http_test_responses,
       fn
-        @verified_by_gs1_url, _options ->
-          {:ok, %Req.Response{status: 200, body: []}}
-
         @gs1_kenya_url, options ->
-          assert options[:json] == %{"id" => %{"barcode" => "6161101890496"}}
+          assert options[:json] == %{"barcode" => "6161101890496"}
 
           {:ok,
            %Req.Response{
              status: 200,
              body:
-               ~s({"weight":"1","uom":"H87","target":"001","package":null,"name":"Fay","image":"https://gs1kenya.org/uploads/","description":" Fay 10 extra sheets","company":"KIM-FAY EAST AFRICA LIMITED","classify":"Beauty/Personal Care/Hygiene Variety Packs"})
+               ~s({"product":{"weight":"30","unit_of_measure":"u2","target_market":"404","brand_name":"Pain Relief"},"brand_owner":{"brand_owner":"Example Pharma","license_type":"GCP","license_key":"616110189"}})
            }}
       end
     )
@@ -255,13 +181,12 @@ defmodule VerifyBarcodes.VerifyGtinTest do
 
     assert product.source_label == "GS1 Kenya"
     assert product.gtin == "6161101890496"
-    assert product.name == "Fay"
-    assert product.description == "Fay 10 extra sheets"
-    assert product.net_content == "1 Piece"
-    assert product.target_market == "Global"
-    assert product.unit_of_measure == "Piece"
-    assert product.category == "Beauty/Personal Care/Hygiene Variety Packs"
-    assert product.licensee == "KIM-FAY EAST AFRICA LIMITED"
+    assert product.brand == "Pain Relief"
+    assert product.net_content == "30 Tablet"
+    assert product.unit_of_measure == "Tablet"
+    assert product.target_market == "404"
+    assert product.licensee == "Example Pharma"
+    assert product.license_key == "616110189"
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:verify_barcodes, key)

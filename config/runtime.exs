@@ -44,7 +44,9 @@ load_dotenv.(Path.expand("../.env", __DIR__))
 
 config :verify_barcodes,
   gs1_kenya_getbarcode_url:
-    System.get_env("GS1_KENYA_GETBARCODE_URL") || "https://gs1kenya.org/activate/getbarcode"
+    System.get_env("GS1_KENYA_GETBARCODE_URL") || "https://gs1kenya.org/activate/getbarcode_v2",
+  gs1_kenya_bearer_token:
+    System.get_env("GS1_KENYA_BEARER_TOKEN") || "XP2hhQuJ4Uk_ksAhICQq1QXOZX_neqDrP13BYRmPQ3M"
 
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the

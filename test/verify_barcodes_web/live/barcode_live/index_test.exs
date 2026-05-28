@@ -125,25 +125,38 @@ defmodule VerifyBarcodesWeb.BarcodeLive.IndexTest do
         %{
           gtin: "09506000134352",
           brand: "Acme Foods",
-          name: nil,
+          name: "Acme Coffee",
           description: "Roasted ground coffee",
           category: nil,
           net_content: "500 GRM",
           country_of_sale: nil,
           target_market: nil,
+          status: "Active",
           unit_of_measure: nil,
           image_url: nil,
           licensee: "Acme Foods Ltd",
-          source_label: "Verified by GS1"
+          brand_owner: nil,
+          brand_owner_address: nil,
+          brand_owner_website: nil,
+          licensing_member_organization: "GS1 Kenya",
+          license_type: "GCP",
+          license_key: "9506000",
+          source_label: "GS1 Kenya"
         }}}
     )
 
     html = render(view)
 
-    assert html =~ "Registry attributes are shown here, with missing fields first."
-    assert html =~ "4/7 available"
+    assert html =~ "GS1 Kenya attributes are shown here, with missing fields first."
+    assert html =~ "10/16 available"
     assert html =~ "Company"
     assert html =~ "Acme Foods Ltd"
+    assert html =~ "GCP / license key"
+    assert html =~ "9506000"
+    assert html =~ "License type"
+    assert html =~ "GCP"
+    assert html =~ "Licensing organization"
+    assert html =~ "GS1 Kenya"
 
     assert position_of(html, "Product category") < position_of(html, "Product name")
     assert position_of(html, "Product category") < position_of(html, "Product description")

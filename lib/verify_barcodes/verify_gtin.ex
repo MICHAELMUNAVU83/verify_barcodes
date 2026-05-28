@@ -1,38 +1,16 @@
 defmodule VerifyBarcodes.VerifyGtin do
   require Logger
 
-  @verified_by_gs1_url "https://grp.gs1.org/grp/v3.2/gtins/verified"
-  @default_gs1_kenya_url "https://gs1kenya.org/activate/getbarcode"
+  @default_gs1_kenya_url "https://gs1kenya.org/activate/getbarcode_v2"
+  @default_gs1_kenya_bearer_token "XP2hhQuJ4Uk_ksAhICQq1QXOZX_neqDrP13BYRmPQ3M"
 
   defmodule ReqClient do
     def post(url, options), do: Req.post(url, options)
   end
 
   def verify(gtin) when is_binary(gtin) do
-    Logger.info("Starting GTIN registry lookup for #{gtin}")
-
-    case lookup_verified_by_gs1(gtin) do
-      {:ok, :not_verified} ->
-        Logger.info(
-          "Verified by GS1 did not return usable product data for #{gtin}; trying GS1 Kenya"
-        )
-
-        lookup_gs1_kenya(gtin)
-
-      {:ok, product} ->
-        Logger.info(
-          "GTIN #{gtin} matched product data from #{product[:source_label] || "registry"}"
-        )
-
-        {:ok, product}
-
-      {:error, reason} ->
-        Logger.warning(
-          "Verified by GS1 lookup failed for #{gtin}: #{inspect(reason)}; trying GS1 Kenya"
-        )
-
-        lookup_gs1_kenya(gtin)
-    end
+    Logger.info("Starting GS1 Kenya GTIN lookup for #{gtin}")
+    lookup_gs1_kenya(gtin)
   rescue
     error ->
       Logger.error("GTIN lookup crashed for #{gtin}: #{Exception.message(error)}")
@@ -41,60 +19,6 @@ defmodule VerifyBarcodes.VerifyGtin do
     kind, reason ->
       Logger.error("GTIN lookup threw #{inspect(kind)} for #{gtin}: #{inspect(reason)}")
       {:ok, :not_verified}
-  end
-
-  defp lookup_verified_by_gs1(gtin) do
-    headers = [
-      {"Content-Type", "application/json"},
-      {"Cache-Control", "no-cache"},
-      {"APIKEY", "5c969e5eb17a4704a07c9ad7557190fa"}
-    ]
-
-    body = [VerifyBarcodes.Gtin.pad_to_14(gtin)]
-
-    req_options = [
-      headers: headers,
-      json: body,
-      retry: :transient,
-      max_retries: 5,
-      receive_timeout: 60_000
-    ]
-
-    Logger.debug("Posting GTIN #{gtin} to Verified by GS1")
-
-    case http_client().post(@verified_by_gs1_url, req_options) do
-      {:ok, %Req.Response{status: 200, body: body}} when is_list(body) ->
-        Logger.debug("Verified by GS1 returned 200 for #{gtin} with #{length(body)} result(s)")
-
-        case Enum.at(body, 0) do
-          nil ->
-            Logger.info("Verified by GS1 returned no records for #{gtin}")
-            {:ok, :not_verified}
-
-          product ->
-            product = normalize_verified_by_gs1_product(product, gtin)
-
-            if meaningful_product_data?(product) do
-              Logger.info("Verified by GS1 returned usable product data for #{gtin}")
-              {:ok, product}
-            else
-              Logger.info("Verified by GS1 returned only sparse product data for #{gtin}")
-              {:ok, :not_verified}
-            end
-        end
-
-      {:ok, %Req.Response{status: status}} when status in 400..599 ->
-        Logger.warning("Verified by GS1 returned HTTP #{status} for #{gtin}")
-        {:ok, :not_verified}
-
-      {:error, reason} ->
-        Logger.warning("Verified by GS1 request errored for #{gtin}: #{inspect(reason)}")
-        {:error, reason}
-
-      _ ->
-        Logger.warning("Verified by GS1 returned an unexpected response for #{gtin}")
-        {:ok, :not_verified}
-    end
   end
 
   defp lookup_gs1_kenya(gtin) do
@@ -117,12 +41,13 @@ defmodule VerifyBarcodes.VerifyGtin do
   defp lookup_gs1_kenya_candidate(candidate, original_gtin) do
     headers = [
       {"Content-Type", "application/json"},
-      {"Accept", "application/json"}
+      {"Accept", "application/json"},
+      {"Authorization", "Bearer #{gs1_kenya_bearer_token()}"}
     ]
 
     req_options = [
       headers: headers,
-      json: %{"id" => %{"barcode" => candidate}},
+      json: %{"barcode" => candidate},
       retry: :transient,
       max_retries: 5,
       receive_timeout: 60_000
@@ -180,23 +105,6 @@ defmodule VerifyBarcodes.VerifyGtin do
     end
   end
 
-  defp normalize_verified_by_gs1_product(product, gtin) do
-    %{
-      gtin: extract_string(product["gtin"]) || gtin,
-      brand: extract_value(product["brandName"]),
-      name: nil,
-      description: extract_value(product["productDescription"]),
-      category: extract_string(product["gpcCategoryCode"]),
-      net_content: extract_verified_by_gs1_net_content(product["netContent"]),
-      country_of_sale: extract_country(product["countryOfSaleCode"]),
-      target_market: nil,
-      unit_of_measure: nil,
-      image_url: extract_value(product["productImageUrl"]),
-      licensee: extract_manufacturer(product["gs1Licence"]),
-      source_label: "Verified by GS1"
-    }
-  end
-
   defp gs1_kenya_candidates(gtin) do
     [strip_single_leading_zero(gtin), gtin]
     |> Enum.reject(&is_nil/1)
@@ -206,20 +114,43 @@ defmodule VerifyBarcodes.VerifyGtin do
   defp strip_single_leading_zero("0" <> rest) when byte_size(rest) == 13, do: rest
   defp strip_single_leading_zero(_gtin), do: nil
 
-  defp normalize_gs1_kenya_product(product, gtin) do
+  defp normalize_gs1_kenya_product(response, gtin) do
+    product =
+      response
+      |> Map.get("product", response)
+      |> map_value()
+
+    brand_owner = map_value(response["brand_owner"])
+
     normalized = %{
       gtin: gtin,
-      brand: nil,
+      brand: extract_string(product["brand_name"]) || extract_string(product["brand"]),
       name: extract_string(product["name"]),
       description: extract_string(product["description"]),
-      category: extract_string(product["classify"]),
+      category:
+        extract_string(product["global_product_classification"]) ||
+          extract_string(product["classify"]),
       net_content:
-        extract_gs1_kenya_net_content(product["weight"], product["uom"], product["package"]),
+        extract_gs1_kenya_net_content(
+          product["weight"],
+          product["unit_of_measure"] || product["uom"],
+          product["package"]
+        ),
       country_of_sale: nil,
-      target_market: target_market_label(product["target"]),
-      unit_of_measure: uom_label(product["uom"]),
+      target_market: target_market_label(product["target_market"] || product["target"]),
+      status: extract_string(product["status"]),
+      unit_of_measure: uom_label(product["unit_of_measure"] || product["uom"]),
       image_url: extract_image_url(product["image"]),
-      licensee: extract_string(product["company"]),
+      licensee:
+        extract_string(brand_owner["brand_owner"]) ||
+          extract_string(product["brand_owner"]) ||
+          extract_string(product["company"]),
+      brand_owner: extract_string(product["brand_owner"]),
+      brand_owner_address: extract_string(brand_owner["address"]),
+      brand_owner_website: extract_website(brand_owner["website"]),
+      licensing_member_organization: extract_string(brand_owner["licensing_member_organization"]),
+      license_type: extract_string(brand_owner["license_type"]),
+      license_key: extract_string(brand_owner["license_key"]),
       source_label: "GS1 Kenya"
     }
 
@@ -242,9 +173,6 @@ defmodule VerifyBarcodes.VerifyGtin do
 
   defp decode_gs1_kenya_body(body), do: {:error, {:unexpected_body_type, body}}
 
-  defp extract_value([first | _]) when is_map(first), do: extract_string(Map.get(first, "value"))
-  defp extract_value(_), do: nil
-
   defp extract_string(value) when is_binary(value) do
     value
     |> String.trim()
@@ -256,38 +184,12 @@ defmodule VerifyBarcodes.VerifyGtin do
 
   defp extract_string(_), do: nil
 
-  defp extract_verified_by_gs1_net_content([first | _]) when is_map(first) do
-    [Map.get(first, "value"), Map.get(first, "unitCode")]
-    |> Enum.map(&extract_string/1)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.join(" ")
-    |> extract_string()
-  end
-
-  defp extract_verified_by_gs1_net_content(_), do: nil
-
   defp extract_gs1_kenya_net_content(weight, uom, package) do
     [extract_string(weight), uom_label(uom), extract_string(package)]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" ")
     |> extract_string()
   end
-
-  defp extract_country([first | _]) when is_map(first) do
-    [Map.get(first, "alpha3"), Map.get(first, "alpha2"), Map.get(first, "numeric")]
-    |> Enum.map(&extract_string/1)
-    |> Enum.reject(&is_nil/1)
-    |> case do
-      [alpha3, alpha2 | _] -> "#{alpha3} (#{alpha2})"
-      [country | _] -> country
-      _ -> nil
-    end
-  end
-
-  defp extract_country(_), do: nil
-
-  defp extract_manufacturer(%{"licenseeName" => name}), do: extract_string(name)
-  defp extract_manufacturer(_), do: nil
 
   defp extract_image_url(value) do
     value
@@ -301,6 +203,7 @@ defmodule VerifyBarcodes.VerifyGtin do
   defp target_market_label(value) do
     case extract_string(value) do
       "001" -> "Global"
+      "KE" -> "Kenya"
       other -> other
     end
   end
@@ -308,6 +211,7 @@ defmodule VerifyBarcodes.VerifyGtin do
   defp uom_label(value) do
     case value |> extract_string() |> maybe_upcase() do
       "H87" -> "Piece"
+      "PIECE" -> "Piece"
       "U2" -> "Tablet"
       other -> other
     end
@@ -318,10 +222,17 @@ defmodule VerifyBarcodes.VerifyGtin do
 
   defp present?(value), do: value not in [nil, "", []]
 
-  defp meaningful_product_data?(product) do
-    product
-    |> Map.drop([:gtin, :source_label])
-    |> Enum.any?(fn {_key, value} -> present?(value) end)
+  defp map_value(value) when is_map(value), do: value
+  defp map_value(_), do: %{}
+
+  defp extract_website(value) do
+    case extract_string(value) do
+      nil -> nil
+      "https://N/A" -> nil
+      "http://N/A" -> nil
+      "N/A" -> nil
+      website -> website
+    end
   end
 
   defp http_client do
@@ -330,5 +241,13 @@ defmodule VerifyBarcodes.VerifyGtin do
 
   defp gs1_kenya_url do
     Application.get_env(:verify_barcodes, :gs1_kenya_getbarcode_url, @default_gs1_kenya_url)
+  end
+
+  defp gs1_kenya_bearer_token do
+    Application.get_env(
+      :verify_barcodes,
+      :gs1_kenya_bearer_token,
+      @default_gs1_kenya_bearer_token
+    )
   end
 end
